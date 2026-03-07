@@ -15,13 +15,13 @@ You should have received a copy of the GNU General Public License
 along with this program.  If not, see <https://www.gnu.org/licenses/>.
 */
 
-package libcore
+package libsagernetcore
 
 import (
 	"net/http"
 	_ "net/http/pprof"
 
-	"libcore/comm"
+	"github.com/dyhkwong/libsagernetcore/common"
 )
 
 type DebugInstance struct {
@@ -39,5 +39,5 @@ func NewDebugInstance(addr string) *DebugInstance {
 }
 
 func (d *DebugInstance) Close() {
-	comm.CloseIgnore(d.server)
+	common.CloseIgnore(d.server)
 }
