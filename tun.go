@@ -61,7 +61,10 @@ type Tun2ray struct {
 
 	dumpUID      bool
 	trafficStats bool
-	pcap         bool
+	uidDumper    inbound.UidDumper
+	selfUID      int32
+
+	pcap bool
 
 	udpTableMu sync.Mutex
 	udpTable   map[string]*writeQueue
@@ -145,14 +148,20 @@ func NewTun2ray(config *TunConfig) (*Tun2ray, error) {
 				return nil, err
 			}
 		}
-
 		t.dev, err = gvisor.New(config.FileDescriptor, config.MTU, t, pcapFile, config.EnableIPv6, config.DiscardICMP, discardIPv6Func)
 	case common.TunImplementationSystem:
 		t.dev, err = nat.New(config.FileDescriptor, config.MTU, t, t.addr4, t.addr6, config.EnableIPv6, config.DiscardICMP, discardIPv6Func)
 	}
-
 	if err != nil {
 		return nil, err
+	}
+
+	if t.dumpUID || t.trafficStats {
+		t.uidDumper, err = inbound.GetUidDumper()
+		if err != nil {
+			return nil, err
+		}
+		t.selfUID = int32(os.Getuid())
 	}
 
 	if !config.Protect {
@@ -211,25 +220,21 @@ func (t *Tun2ray) NewConnection(source v2rayNet.Destination, destination v2rayNe
 	ctx = session.ContextWithInbound(ctx, ib)
 	ctx = session.ContextWithID(ctx, session.NewID())
 
-	uid := int32(-1)
-	self := false
-	hasUID := false
-	uidDumper, _ := inbound.GetUidDumper()
-	if uidDumper != nil && (t.dumpUID || t.trafficStats) {
-		var err error
-		uid, err = uidDumper.DumpUid(unix.IPPROTO_TCP, source.Address.IP().String(), int32(source.Port), destination.Address.IP().String(), int32(destination.Port))
-		if err == nil {
-			self = int(uid) == os.Getuid()
-			if !self {
-				if packageName, _ := uidDumper.GetPackageName(int32(uid)); len(packageName) == 0 {
-					newError("[TCP (", uid, ")] ", source.NetAddr(), " ==> ", destination.NetAddr()).AtInfo().WriteToLog(errors.ExportIDToError(ctx))
-				} else {
-					newError("[TCP (", uid, "/", packageName, ")] ", source.NetAddr(), " ==> ", destination.NetAddr()).AtInfo().WriteToLog(errors.ExportIDToError(ctx))
-				}
+	var uid int32
+	if t.dumpUID || t.trafficStats {
+		u, err := t.uidDumper.DumpUid(unix.IPPROTO_TCP, source.Address.IP().String(), int32(source.Port), destination.Address.IP().String(), int32(destination.Port))
+		if err != nil {
+			u = -1
+		}
+		ib.UID = &u
+		uid = u
+		if u != t.selfUID {
+			if packageName, _ := t.uidDumper.GetPackageName(u); len(packageName) == 0 {
+				newError("[TCP (", u, ")] ", source.NetAddr(), " ==> ", destination.NetAddr()).AtInfo().WriteToLog(errors.ExportIDToError(ctx))
+			} else {
+				newError("[TCP (", u, "/", packageName, ")] ", source.NetAddr(), " ==> ", destination.NetAddr()).AtInfo().WriteToLog(errors.ExportIDToError(ctx))
 			}
 		}
-		ib.UID = &uid
-		hasUID = true
 	}
 
 	if !isDns && (t.sniffing || t.fakedns) {
@@ -249,8 +254,8 @@ func (t *Tun2ray) NewConnection(source v2rayNet.Destination, destination v2rayNe
 		})
 	}
 
-	var stats *appStats
-	if hasUID && t.trafficStats && !self {
+	if t.trafficStats && uid != t.selfUID {
+		var stats *appStats
 		if iStats, exists := t.appStats.Load(uid); exists {
 			stats = iStats.(*appStats)
 		} else {
@@ -381,25 +386,21 @@ func (t *Tun2ray) newPacket(queue *writeQueue, source v2rayNet.Destination, dest
 	ctx = session.ContextWithInbound(ctx, ib)
 	ctx = session.ContextWithID(ctx, session.NewID())
 
-	uid := int32(-1)
-	self := false
-	hasUID := false
-	uidDumper, _ := inbound.GetUidDumper()
-	if uidDumper != nil && (t.dumpUID || t.trafficStats) {
-		var err error
-		uid, err = uidDumper.DumpUid(unix.IPPROTO_UDP, source.Address.IP().String(), int32(source.Port), destination.Address.IP().String(), int32(destination.Port))
-		if err == nil {
-			self = int(uid) == os.Getuid()
-			if !self {
-				if packageName, _ := uidDumper.GetPackageName(int32(uid)); len(packageName) == 0 {
-					newError("[UDP (", uid, ")] ", source.NetAddr(), " ==> ", destination.NetAddr()).AtInfo().WriteToLog(errors.ExportIDToError(ctx))
-				} else {
-					newError("[UDP (", uid, "/", packageName, ")] ", source.NetAddr(), " ==> ", destination.NetAddr()).AtInfo().WriteToLog(errors.ExportIDToError(ctx))
-				}
+	var uid int32
+	if t.dumpUID || t.trafficStats {
+		u, err := t.uidDumper.DumpUid(unix.IPPROTO_UDP, source.Address.IP().String(), int32(source.Port), destination.Address.IP().String(), int32(destination.Port))
+		if err != nil {
+			u = -1
+		}
+		ib.UID = &u
+		uid = u
+		if u != t.selfUID {
+			if packageName, _ := t.uidDumper.GetPackageName(int32(u)); len(packageName) == 0 {
+				newError("[UDP (", u, ")] ", source.NetAddr(), " ==> ", destination.NetAddr()).AtInfo().WriteToLog(errors.ExportIDToError(ctx))
+			} else {
+				newError("[UDP (", u, "/", packageName, ")] ", source.NetAddr(), " ==> ", destination.NetAddr()).AtInfo().WriteToLog(errors.ExportIDToError(ctx))
 			}
 		}
-		ib.UID = &uid
-		hasUID = true
 	}
 
 	if !isDns && (t.sniffing || t.fakedns) {
@@ -441,8 +442,8 @@ func (t *Tun2ray) newPacket(queue *writeQueue, source v2rayNet.Destination, dest
 		return
 	}
 
-	var stats *appStats
-	if hasUID && t.trafficStats && !self {
+	if t.trafficStats && uid != t.selfUID {
+		var stats *appStats
 		if iStats, exists := t.appStats.Load(uid); exists {
 			stats = iStats.(*appStats)
 		} else {
