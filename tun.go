@@ -298,6 +298,7 @@ func (t *Tun2ray) NewConnection(source v2rayNet.Destination, destination v2rayNe
 	proxyConn, err := t.v2ray.dial(ctx, destination)
 	if err != nil {
 		newError(err).AtError().WriteToLog(errors.ExportIDToError(ctx))
+		conn.Close()
 		return
 	}
 	defer common.CloseIgnore(proxyConn)
